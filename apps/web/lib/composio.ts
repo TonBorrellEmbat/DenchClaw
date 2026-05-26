@@ -307,6 +307,52 @@ export function normalizeComposioConnections(
 // Config resolution
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-toolkit BYO OAuth credentials. When set, the toolkit's auth_config is
+ * created/updated as `use_custom_auth` with these credentials so Composio
+ * runs the OAuth flow through *our* developer app instead of theirs.
+ *
+ * This is the only way to escape Composio's managed-auth scope superset:
+ * their HubSpot app marks ~30 scopes as Required at registration, so any
+ * managed-auth connect requires all of them. With a custom auth_config,
+ * the scopes are bounded by what *we* register on the developer-side app
+ * (e.g., read-only CRM only).
+ *
+ * Env var pairs are intentionally toolkit-prefixed so adding more
+ * providers (Slack, Linear, etc.) is just another `if (...)` here.
+ */
+function resolveCustomAuthCredentials(toolkitSlug: string): {
+  clientId: string;
+  clientSecret: string;
+  scopes: string[];
+} | null {
+  const slug = toolkitSlug.toLowerCase();
+  if (slug === "hubspot") {
+    const clientId = process.env.HUBSPOT_OAUTH_CLIENT_ID?.trim();
+    const clientSecret = process.env.HUBSPOT_OAUTH_CLIENT_SECRET?.trim();
+    if (!clientId || !clientSecret) return null;
+    return {
+      clientId,
+      clientSecret,
+      // Must be a subset of what the HubSpot developer app is registered
+      // for. Mirror the read-only CRM set we configured in the HubSpot
+      // app's `requiredScopes`.
+      scopes: [
+        "oauth",
+        "crm.objects.contacts.read",
+        "crm.objects.companies.read",
+        "crm.objects.deals.read",
+        "crm.objects.owners.read",
+        "crm.schemas.contacts.read",
+        "crm.schemas.companies.read",
+        "crm.schemas.deals.read",
+        "tickets",
+      ],
+    };
+  }
+  return null;
+}
+
 export function resolveComposioGatewayUrl(): string {
   return (
     process.env.COMPOSIO_BASE_URL?.trim() ||
@@ -481,6 +527,7 @@ async function ensureAuthConfigForToolkit(
   apiKey: string,
   toolkitSlug: string,
 ): Promise<string> {
+  const customCreds = resolveCustomAuthCredentials(toolkitSlug);
   const presetTools = COMPOSIO_TOOLKIT_TOOL_PRESETS[toolkitSlug.toLowerCase()] ?? null;
 
   const listParams = new URLSearchParams({ toolkit_slugs: toolkitSlug, limit: "20" });
@@ -496,38 +543,73 @@ async function ensureAuthConfigForToolkit(
       const item = asRecord(raw);
       const id = readString(item?.id);
       if (id && readString(item?.toolkit_slug ?? asRecord(item?.toolkit)?.slug) === toolkitSlug) {
-        if (presetTools && presetTools.length > 0) {
-          // Realign existing auth_config to current preset. This is the path
-          // that gets a user from "Composio asked for everything" to
-          // "Composio asked for only the tools we listed" without having to
-          // delete and re-create the auth_config by hand.
-          await gatewayFetch(gatewayUrl, apiKey, `/api/v3.1/auth_configs/${encodeURIComponent(id)}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              // Composio's PATCH endpoint discriminates by `type`; "default"
-              // selects managed auth, "custom" selects BYO. Without `type`
-              // the request 400s with "Invalid discriminator value".
-              type: "default",
-              tool_access_config: {
-                tools_for_connected_account_creation: presetTools,
+        // Realign existing auth_config to the current preset/credentials.
+        // For managed auth that's just the tool list; for custom auth we
+        // also keep client_id/secret in sync in case they've rotated.
+        const patchBody: UnknownRecord = customCreds
+          ? {
+              type: "custom",
+              authScheme: "OAUTH2",
+              credentials: {
+                client_id: customCreds.clientId,
+                client_secret: customCreds.clientSecret,
+                scopes: customCreds.scopes.join(","),
               },
-            }),
-          });
-        }
+            }
+          : {
+              type: "default",
+              ...(presetTools && presetTools.length > 0
+                ? {
+                    tool_access_config: {
+                      tools_for_connected_account_creation: presetTools,
+                    },
+                  }
+                : {}),
+            };
+        await gatewayFetch(
+          gatewayUrl,
+          apiKey,
+          `/api/v3.1/auth_configs/${encodeURIComponent(id)}`,
+          {
+            method: "PATCH",
+            body: JSON.stringify(patchBody),
+          },
+        );
         return id;
       }
     }
   }
 
-  const createBody: UnknownRecord = {
-    toolkit: { slug: toolkitSlug },
-    auth_config: { type: "use_composio_managed_auth" },
-  };
-  if (presetTools && presetTools.length > 0) {
-    (createBody.auth_config as UnknownRecord).tool_access_config = {
-      tools_for_connected_account_creation: presetTools,
-    };
-  }
+  // No existing auth_config — create one. Use BYO credentials when the
+  // toolkit-specific env vars are set, otherwise fall back to managed auth
+  // (broad scopes; only works for toolkits where the user is OK with that
+  // or where Composio's managed defaults are narrow enough).
+  const createBody: UnknownRecord = customCreds
+    ? {
+        toolkit: { slug: toolkitSlug },
+        auth_config: {
+          type: "use_custom_auth",
+          authScheme: "OAUTH2",
+          credentials: {
+            client_id: customCreds.clientId,
+            client_secret: customCreds.clientSecret,
+            scopes: customCreds.scopes.join(","),
+          },
+        },
+      }
+    : {
+        toolkit: { slug: toolkitSlug },
+        auth_config: {
+          type: "use_composio_managed_auth",
+          ...(presetTools && presetTools.length > 0
+            ? {
+                tool_access_config: {
+                  tools_for_connected_account_creation: presetTools,
+                },
+              }
+            : {}),
+        },
+      };
   const createRes = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/auth_configs", {
     method: "POST",
     body: JSON.stringify(createBody),
@@ -535,7 +617,7 @@ async function ensureAuthConfigForToolkit(
   if (!createRes.ok) {
     const detail = await createRes.text().catch(() => "");
     throw new Error(
-      `Failed to create managed auth config for ${toolkitSlug} (HTTP ${createRes.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+      `Failed to create auth config for ${toolkitSlug} (HTTP ${createRes.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`,
     );
   }
   const created = (await createRes.json()) as UnknownRecord;
