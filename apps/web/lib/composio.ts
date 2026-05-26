@@ -472,14 +472,18 @@ export async function initiateComposioConnect(
 ): Promise<ComposioConnectResponse> {
   const authConfigId = await ensureAuthConfigForToolkit(gatewayUrl, apiKey, toolkit);
 
-  const res = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/connected_accounts", {
+  // Composio-managed OAuth configs now require the `/link` endpoint —
+  // POST /api/v3.1/connected_accounts returns
+  // "Creating connections on this endpoint for Composio-managed OAuth auth
+  // configs is no longer supported. Use POST /api/v3/connected_accounts/link
+  // instead." The /link endpoint takes auth_config_id + user_id and returns a
+  // redirect_url the browser can open.
+  const res = await gatewayFetch(gatewayUrl, apiKey, "/api/v3/connected_accounts/link", {
     method: "POST",
     body: JSON.stringify({
-      auth_config: { id: authConfigId },
-      connection: {
-        callback_url: callbackUrl,
-        user_id: COMPOSIO_DEFAULT_USER_ID,
-      },
+      auth_config_id: authConfigId,
+      user_id: COMPOSIO_DEFAULT_USER_ID,
+      callback_url: callbackUrl,
     }),
   });
   if (!res.ok) {
@@ -489,9 +493,8 @@ export async function initiateComposioConnect(
     );
   }
 
-  // Composio's response shape differs from Dench's gateway. Normalize to the
-  // ComposioConnectResponse the UI expects: it needs a redirect URL the
-  // browser can open, plus enough identifiers to track the new connection.
+  // Normalize to the ComposioConnectResponse the UI expects: redirect URL +
+  // connection id. The /link response shape uses `redirect_url` directly.
   const raw = (await res.json()) as UnknownRecord;
   const connectionData = asRecord(raw.connectionData);
   const connectionVal = asRecord(connectionData?.val);
@@ -501,7 +504,10 @@ export async function initiateComposioConnect(
     readString(connectionVal?.redirectUrl) ??
     readString(connectionVal?.redirect_url) ??
     null;
-  const id = readString(raw.id);
+  const id =
+    readString(raw.connected_account_id) ??
+    readString(raw.connection_id) ??
+    readString(raw.id);
 
   return {
     ...(raw as object),

@@ -440,7 +440,16 @@ export async function getComposioMcpHealth(options?: {
     toolCount: null,
   };
 
-  if (apiKey) {
+  // Phase 1 of the Composio-direct fork swaps the integrations UI to call
+  // Composio directly but leaves the agent-side MCP path untouched. Composio
+  // has no single "tools/list" gateway URL (each MCP server is per-toolkit
+  // and gets created via /api/v3.1/mcp/servers), so the gateway tools probe
+  // is genuinely not applicable until phase 2 wires that up. Report it as
+  // "unknown" instead of "fail" so the integrations UI doesn't surface a
+  // false alarm. When COMPOSIO_API_KEY is set we know we're in this mode.
+  const isComposioDirectMode = Boolean(process.env.COMPOSIO_API_KEY?.trim());
+
+  if (apiKey && !isComposioDirectMode) {
     if (
       cachedGatewayTools
       && !options?.repairConfig
@@ -468,6 +477,13 @@ export async function getComposioMcpHealth(options?: {
       }
       cachedGatewayToolsCheck = gatewayTools;
     }
+  } else if (isComposioDirectMode) {
+    gatewayTools = {
+      status: "unknown",
+      detail: "Gateway tools/list probe is not applicable in Composio-direct mode (phase 1).",
+      checkedAt: generatedAt,
+      toolCount: null,
+    };
   }
 
   let liveAgent: ComposioMcpHealth["liveAgent"] = apiKey && cachedLiveAgent
