@@ -449,14 +449,17 @@ const COMPOSIO_TOOLKIT_TOOL_PRESETS: Record<string, string[]> = {
     "HUBSPOT_GET_TICKET",
     "HUBSPOT_GET_TICKETS",
     "HUBSPOT_SEARCH_TICKETS",
-    // Generic CRM object reads / cross-object associations / pipelines
-    "HUBSPOT_READ_CRM_OBJECT_BY_ID",
-    "HUBSPOT_SEARCH_CRM_OBJECTS_BY_CRITERIA",
-    "HUBSPOT_READ_APAGE_OF_OBJECTS_BY_TYPE",
-    "HUBSPOT_LIST_OBJECT_ASSOCIATIONS",
+    // Pipelines + account info
     "HUBSPOT_GET_PIPELINE_BY_ID",
     "HUBSPOT_GET_ACCOUNT_INFO",
-    "HUBSPOT_LIST_GRANTED_SCOPES",
+    // NOTE: HUBSPOT_READ_APAGE_OF_OBJECTS_BY_TYPE, HUBSPOT_READ_CRM_OBJECT_BY_ID,
+    // HUBSPOT_SEARCH_CRM_OBJECTS_BY_CRITERIA, HUBSPOT_LIST_OBJECT_ASSOCIATIONS,
+    // and HUBSPOT_LIST_GRANTED_SCOPES are deliberately omitted: the first
+    // declares a templated scope (`crm.objects.{objectType}.read`) that
+    // HubSpot rejects at the authorize step, the next three are "any object"
+    // tools that declare 60-70 scopes including writes (defeats the purpose
+    // of the narrow preset), and the last declares deals.write in its
+    // metadata for unrelated reasons.
   ],
 };
 
