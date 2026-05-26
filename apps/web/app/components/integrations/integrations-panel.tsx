@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "../ui/button";
 import type { IntegrationsState } from "@/lib/integrations";
 import { ComposioAppsSection } from "./composio-apps-section";
+import { McpIntegrationsSection } from "./mcp-integrations-section";
 
 export function IntegrationsPanel({ embedded }: { embedded?: boolean } = {}) {
   const [data, setData] = useState<IntegrationsState | null>(null);
@@ -89,16 +90,19 @@ export function IntegrationsPanel({ embedded }: { embedded?: boolean } = {}) {
       )}
 
       {!loading && !error && data && (
-        <ComposioAppsSection
-          eligible={Boolean(data.denchCloud.hasKey && data.denchCloud.isPrimaryProvider)}
-          lockBadge={
-            !data.denchCloud.hasKey
-              ? "Get Dench Cloud API Key"
-              : !data.denchCloud.isPrimaryProvider
-                ? "Use Dench Cloud"
-                : null
-          }
-        />
+        <>
+          <McpIntegrationsSection />
+          <ComposioAppsSection
+            eligible={Boolean(data.denchCloud.hasKey && data.denchCloud.isPrimaryProvider)}
+            lockBadge={
+              !data.denchCloud.hasKey
+                ? "Get Dench Cloud API Key"
+                : !data.denchCloud.isPrimaryProvider
+                  ? "Use Dench Cloud"
+                  : null
+            }
+          />
+        </>
       )}
     </div>
   );
