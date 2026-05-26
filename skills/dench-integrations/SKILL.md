@@ -1,190 +1,147 @@
 ---
 name: dench-integrations
-description: Connected app integration recipes for Dench Integrations (Gmail, Slack, GitHub, Notion, Google Calendar, Linear, Stripe, YouTube, and 500+ more)
+description: Connected-app integration recipes. In this fork the agent uses Composio's hosted MCP servers directly (HUBSPOT_*, GMAIL_*, etc.), not the Dench-gateway dench_* wrappers.
 ---
 
-# Dench Integrations
+# Connected app integrations (Composio MCP, direct)
 
-Use the **Dench Integrations tools** for all connected third-party app tasks in DenchClaw.
+This deployment is the **Composio-direct fork** of DenchClaw. The legacy
+`dench_search_integrations` / `dench_execute_integrations` tools point at
+the Dench Cloud gateway, which is not configured here — calling them
+returns nothing. **Do not use them.**
 
-## Two tools only
+Instead, each connected toolkit is exposed to the agent as a native MCP
+server (via OpenClaw's `mcp.servers.*` config). The tools appear in your
+tool list with their upper-snake slugs (e.g. `HUBSPOT_LIST_DEALS`,
+`GMAIL_FETCH_EMAILS`, `SLACK_SEND_MESSAGE`) and you call them directly.
 
-1. **`dench_search_integrations`** — Search for available integration tools by query and/or toolkit slug. Returns tool slugs, descriptions, full `input_schema`, connection status, and connected accounts.
-2. **`dench_execute_integrations`** — Execute a tool by its `tool_slug` with `arguments` matching the `input_schema`. The gateway handles authentication and account selection automatically when only one account is connected.
+## How to discover which integrations are connected
 
-## Workflow
+1. **Look at your available tools.** Any toolkit whose tools appear with
+   their `<TOOLKIT>_*` slug is connected and ready.
+2. **If a tool you expect isn't there**, the user hasn't connected that
+   toolkit yet. Tell them to open the Integrations tab in DenchClaw and
+   click Connect for the toolkit. After connection, the agent picks the
+   tools up automatically on the next session (or after a gateway
+   restart).
+3. **Never** call `dench_search_integrations` to "check" — it doesn't
+   return useful results in this fork.
 
-1. Call `dench_search_integrations` with a query with EXACT search strings of what might help you find relevant tools. like "posthog project", "stripe subscription", etc. (optionally narrow with toolkit).
-2. Inspect the returned `results` — each has `tool_slug`, `input_schema`, `is_connected`, `account_count`, and `accounts`.
-3. Read the `input_schema` to understand required fields, types, and defaults.
-4. Call `dench_execute_integrations` with `tool_slug` and the correct `arguments`.
+## How to call an integration tool
 
-Do **not** use:
+Call it directly by its MCP slug. The `inputSchema` from the tool
+listing is authoritative — read field names, types, and required
+properties from there.
 
-- `gog`, shell CLIs for Gmail / Calendar / Drive / Slack / GitHub / Notion / Linear (unless you need to as last resort or if explicitly asked)
-- `curl` or raw gateway HTTP calls (unless explicitly asked)
-- Direct provider REST calls (unless explicitly asked)
+### HubSpot — find deals closed this week
 
-## Multi-account handling
+```
+HUBSPOT_SEARCH_DEALS({
+  filterGroups: [{
+    filters: [
+      { propertyName: "hs_is_closed_won", operator: "EQ", value: "true" },
+      { propertyName: "closedate", operator: "GTE", value: "<start-of-week>" },
+      { propertyName: "closedate", operator: "LTE", value: "<end-of-week>" }
+    ]
+  }],
+  properties: ["dealname", "amount", "closedate", "dealstage"],
+  limit: 100
+})
+```
 
-When `dench_search_integrations` shows `account_count > 1` for a toolkit:
+(The exact filter property names depend on the HubSpot account's deal
+pipeline configuration — if `hs_is_closed_won` isn't a property, fall
+back to filtering by `dealstage` against the closed-won stage id, which
+you can find with `HUBSPOT_GET_PIPELINE_BY_ID`.)
 
-1. The `accounts` array lists each connected account with `connected_account_id`, `label`, and `email`.
-2. Ask the user which account they want to use.
-3. Pass the chosen `connected_account_id` to `dench_execute_integrations`.
+### HubSpot — list contacts
 
-When only one account is connected, the gateway auto-selects it — no `connected_account_id` needed.
+```
+HUBSPOT_LIST_CONTACTS({ limit: 25 })
+```
 
-## Execute examples
+### HubSpot — read one contact by id
+
+```
+HUBSPOT_READ_CONTACT({ contactId: "<id>" })
+```
 
 ### Gmail — fetch recent emails
 
-```json
-{
-  "tool_slug": "GMAIL_FETCH_EMAILS",
-  "arguments": {
-    "label_ids": ["INBOX"],
-    "max_results": 10
-  }
-}
+```
+GMAIL_FETCH_EMAILS({
+  label_ids: ["INBOX"],
+  max_results: 10
+})
 ```
 
 ### Slack — send a message
 
-```json
-{
-  "tool_slug": "SLACK_SEND_MESSAGE",
-  "arguments": {
-    "channel": "C01ABCDEF",
-    "text": "Hello from DenchClaw!"
-  }
-}
 ```
-
-### GitHub — list pull requests
-
-```json
-{
-  "tool_slug": "GITHUB_LIST_PULL_REQUESTS",
-  "arguments": {
-    "owner": "DenchHQ",
-    "repo": "denchclaw",
-    "state": "open"
-  }
-}
-```
-
-### Stripe — list subscriptions
-
-```json
-{
-  "tool_slug": "STRIPE_LIST_SUBSCRIPTIONS",
-  "arguments": {
-    "limit": 100
-  }
-}
-```
-
-### YouTube — list subscriptions
-
-```json
-{
-  "tool_slug": "YOUTUBE_LIST_USER_SUBSCRIPTIONS",
-  "arguments": {
-    "part": "snippet",
-    "max_results": 50
-  }
-}
-```
-
-### With explicit account selection
-
-```json
-{
-  "tool_slug": "GMAIL_SEND_EMAIL",
-  "arguments": {
-    "to": "user@example.com",
-    "subject": "Hello",
-    "body": "Test email"
-  },
-  "connected_account_id": "abc123-def456"
-}
+SLACK_SEND_MESSAGE({
+  channel: "C01ABCDEF",
+  text: "Hello from DenchClaw!"
+})
 ```
 
 ## General rules
 
-- Tool names are **uppercase** with underscores (e.g. `GMAIL_FETCH_EMAILS`).
-- Pass **JSON-shaped** arguments as the tool schema requires: arrays are arrays, not comma-separated strings.
-- Read the returned `input_schema` before filling arguments. Use exact field names and types.
-- Treat the live schema from `dench_search_integrations` as authoritative over any recipe table below.
-- If a call fails on argument shape, fix the types and retry once before escalating.
-- If the search returns `availability: "connect_required"`, show the connect link to the user.
-- If the response includes pagination fields (`has_more`, `next_cursor`, `starting_after`, etc.), keep paginating when the user asked for the full dataset.
+- Tool names are **uppercase** with underscores (e.g. `HUBSPOT_LIST_DEALS`).
+- Pass **JSON-shaped** arguments as the tool schema requires: arrays are
+  arrays, not comma-separated strings.
+- Read the returned `inputSchema` before filling arguments. Use exact
+  field names and types.
+- If a tool isn't in your tool list, **don't** call shell CLIs, `gog`,
+  `curl`, or raw REST endpoints to substitute. Stop and tell the user to
+  connect that toolkit in the Integrations tab.
+- For HubSpot specifically the agent is bounded to read-only CRM scopes
+  (contacts, companies, deals, tickets, pipelines, account info). It
+  cannot write to HubSpot in this deployment.
 
-## Quick recipe tables
+## Pagination
 
-### Gmail
+When a response includes pagination fields like `paging.next.after`,
+`next_cursor`, or `has_more`, keep paginating until you've satisfied the
+user's request — but cap at the user's stated limit if any.
 
-| Intent           | Tool                                | Key arguments                                 |
-| ---------------- | ----------------------------------- | --------------------------------------------- |
-| List recent mail | `GMAIL_FETCH_EMAILS`                | `label_ids`: `["INBOX"]`, `max_results`: `10` |
-| Read one message | `GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID` | `message_id` from list results                |
-| Send mail        | `GMAIL_SEND_EMAIL`                  | `to`, `subject`, `body`                       |
+## Multi-account handling
 
-**Gotcha:** `label_ids` must be an array like `["INBOX"]`, never a single string.
+The MCP servers in this fork are scoped to one connected account per
+toolkit, so you don't need to pass `connected_account_id`. If/when
+multi-account support gets added, the tool's `inputSchema` will surface a
+`user_id` or `connected_account_id` field — pass the right value from
+context.
 
-### Slack
+## Quick recipe table
 
-| Intent         | Tool                       | Key arguments      |
-| -------------- | -------------------------- | ------------------ |
-| Send a message | `SLACK_SEND_MESSAGE`       | `channel`, `text`  |
-| List channels  | `SLACK_LIST_CONVERSATIONS` | Use schema filters |
+### HubSpot
 
-**Gotcha:** `channel` is usually a channel ID (starts with `C`), not the display name.
+| Intent | Tool | Key arguments |
+|---|---|---|
+| List contacts | `HUBSPOT_LIST_CONTACTS` | `limit` (max 100) |
+| Read one contact | `HUBSPOT_READ_CONTACT` | `contactId` |
+| Search contacts | `HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA` | `filterGroups`, `properties`, `limit` |
+| List companies | `HUBSPOT_LIST_COMPANIES` | `limit` |
+| Get company | `HUBSPOT_GET_COMPANY` | `companyId` |
+| Search companies | `HUBSPOT_SEARCH_COMPANIES` | `filterGroups`, `properties` |
+| List deals | `HUBSPOT_LIST_DEALS` | `limit` |
+| Get deal | `HUBSPOT_GET_DEAL` | `dealId` |
+| Search deals | `HUBSPOT_SEARCH_DEALS` | `filterGroups`, `properties`, `limit` |
+| List tickets | `HUBSPOT_LIST_TICKETS` | `limit` |
+| Get pipeline | `HUBSPOT_GET_PIPELINE_BY_ID` | `pipelineId`, `objectType` |
+| Account info | `HUBSPOT_GET_ACCOUNT_INFO` | (none) |
 
-### GitHub
+### Gmail / Calendar / Drive (when connected)
 
-| Intent             | Tool                                                  | Key arguments                    |
-| ------------------ | ----------------------------------------------------- | -------------------------------- |
-| List repos         | `GITHUB_LIST_REPOSITORIES_FOR_THE_AUTHENTICATED_USER` | Pagination per schema            |
-| Find pull requests | `GITHUB_FIND_PULL_REQUESTS`                           | Best for broad PR search         |
-| List pull requests | `GITHUB_LIST_PULL_REQUESTS`                           | `owner`, `repo`                  |
-| Create issue       | `GITHUB_CREATE_AN_ISSUE`                              | `owner`, `repo`, `title`, `body` |
-
-### Notion
-
-| Intent      | Tool                 | Key arguments            |
-| ----------- | -------------------- | ------------------------ |
-| Search      | `NOTION_SEARCH`      | Query string             |
-| Read page   | `NOTION_GET_PAGE`    | Page ID                  |
-| Create page | `NOTION_CREATE_PAGE` | Parent object per schema |
-
-### Google Calendar
-
-| Intent         | Tool                            | Key arguments                                  |
-| -------------- | ------------------------------- | ---------------------------------------------- |
-| List calendars | `GOOGLE_CALENDAR_CALENDAR_LIST` | Optional params                                |
-| List events    | `GOOGLE_CALENDAR_EVENTS_LIST`   | `calendar_id`, `time_min`/`time_max` (RFC3339) |
-| Create event   | `GOOGLE_CALENDAR_CREATE_EVENT`  | Calendar id + event payload                    |
-
-**Gotcha:** Datetimes should be RFC3339 strings.
-
-### Linear
-
-| Intent       | Tool                  | Key arguments               |
-| ------------ | --------------------- | --------------------------- |
-| List issues  | `LINEAR_LIST_ISSUES`  | Filters per schema          |
-| Create issue | `LINEAR_CREATE_ISSUE` | Team id, title, description |
-
-### Stripe
-
-| Intent               | Tool                          | Key arguments               |
-| -------------------- | ----------------------------- | --------------------------- |
-| List subscriptions   | `STRIPE_LIST_SUBSCRIPTIONS`   | Use schema filters          |
-| Search subscriptions | `STRIPE_SEARCH_SUBSCRIPTIONS` | Customer or filter-specific |
-| List customers       | `STRIPE_LIST_CUSTOMERS`       | For customer lookup         |
-| Retrieve balance     | `STRIPE_RETRIEVE_BALANCE`     | Current balance snapshot    |
+| Intent | Tool | Key arguments |
+|---|---|---|
+| List recent mail | `GMAIL_FETCH_EMAILS` | `label_ids: ["INBOX"]`, `max_results` |
+| Read one message | `GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID` | `message_id` |
+| Send mail | `GMAIL_SEND_EMAIL` | `to`, `subject`, `body` |
 
 ## Subagent handoff
 
-When delegating, include: the `tool_slug`, the `arguments` object (copy shapes from the live `input_schema` returned by `dench_search_integrations`), and if applicable the `connected_account_id`.
+When delegating to a subagent, include: the toolkit's MCP tool name (e.g.
+`HUBSPOT_SEARCH_DEALS`), the `arguments` object (copy shapes from the
+live tool `inputSchema`), and any context-specific filters or limits the
+parent agent decided on.
