@@ -36,21 +36,27 @@
  *      callback URL during development.
  */
 export function resolveAppPublicOrigin(request: Request): string {
-  const forwardedHost = firstHeaderValue(request, "x-forwarded-host");
-  if (forwardedHost) {
-    const forwardedProto = firstHeaderValue(request, "x-forwarded-proto");
-    const proto = forwardedProto === "https" ? "https" : "http";
-    return `${proto}://${forwardedHost}`;
-  }
-
+  // Explicit env override wins. The operator sets this *because* the
+  // surrounding proxy chain can't be trusted to produce the right value —
+  // e.g. AlphaClaw's http-proxy is configured with `changeOrigin: true`
+  // and doesn't add `X-Forwarded-*` itself, so the headers that reach
+  // DenchClaw reflect the in-container loopback target instead of the
+  // public hostname users actually reach.
   const envUrl = process.env.DENCHCLAW_PUBLIC_URL?.trim();
   if (envUrl) {
     try {
       return new URL(envUrl).origin;
     } catch {
-      // DENCHCLAW_PUBLIC_URL is malformed — fall through to request.url
-      // so we still produce *some* origin instead of crashing.
+      // DENCHCLAW_PUBLIC_URL is malformed — fall through to header
+      // detection so we still produce *some* origin instead of crashing.
     }
+  }
+
+  const forwardedHost = firstHeaderValue(request, "x-forwarded-host");
+  if (forwardedHost) {
+    const forwardedProto = firstHeaderValue(request, "x-forwarded-proto");
+    const proto = forwardedProto === "https" ? "https" : "http";
+    return `${proto}://${forwardedHost}`;
   }
 
   return new URL(request.url).origin;

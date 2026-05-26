@@ -78,16 +78,16 @@ describe("resolveAppPublicOrigin", () => {
       expect(origin).toBe("https://real.example.com");
     });
 
-    it("prefers forwarded headers over DENCHCLAW_PUBLIC_URL — needed for warm-pool slug rebinds where the env var is stale but the Host header is live", () => {
+    it("prefers DENCHCLAW_PUBLIC_URL over forwarded headers — the operator sets the env var precisely because the surrounding proxy chain (e.g. AlphaClaw's http-proxy with changeOrigin:true) produces forwarded headers that point at the in-container loopback, not the public hostname", () => {
       process.env.DENCHCLAW_PUBLIC_URL =
-        "https://stale-warm-pool-slug.sandbox.merseoriginals.com";
+        "https://alphadench.onrender.com";
       const origin = resolveAppPublicOrigin(
         makeRequest({
-          forwardedHost: "real-org-slug.sandbox.merseoriginals.com",
-          forwardedProto: "https",
+          forwardedHost: "127.0.0.1:3100",
+          forwardedProto: "http",
         }),
       );
-      expect(origin).toBe("https://real-org-slug.sandbox.merseoriginals.com");
+      expect(origin).toBe("https://alphadench.onrender.com");
     });
   });
 
