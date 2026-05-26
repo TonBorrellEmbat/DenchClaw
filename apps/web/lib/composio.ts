@@ -346,7 +346,6 @@ function resolveCustomAuthCredentials(toolkitSlug: string): {
         "crm.schemas.contacts.read",
         "crm.schemas.companies.read",
         "crm.schemas.deals.read",
-        "tickets",
       ],
     };
   }
@@ -490,12 +489,12 @@ const COMPOSIO_TOOLKIT_TOOL_PRESETS: Record<string, string[]> = {
     "HUBSPOT_GET_DEAL",
     "HUBSPOT_GET_DEALS",
     "HUBSPOT_SEARCH_DEALS",
-    // Tickets
-    "HUBSPOT_LIST_TICKETS",
-    "HUBSPOT_GET_TICKET",
-    "HUBSPOT_GET_TICKETS",
-    "HUBSPOT_SEARCH_TICKETS",
-    // Pipelines + account info
+    // Pipelines + account info. Tickets deliberately dropped: HubSpot's
+    // `tickets` scope is the broad legacy one (read + write + property
+    // management) and triggers "Edit property settings" requirements on
+    // non-admin HubSpot users — which most sales / RevOps users don't have.
+    // Re-add HUBSPOT_*_TICKET* tools + the `tickets` scope on the HubSpot
+    // developer app (app-hsmeta.json) if you genuinely need ticket access.
     "HUBSPOT_GET_PIPELINE_BY_ID",
     "HUBSPOT_GET_ACCOUNT_INFO",
     // NOTE: HUBSPOT_READ_APAGE_OF_OBJECTS_BY_TYPE, HUBSPOT_READ_CRM_OBJECT_BY_ID,

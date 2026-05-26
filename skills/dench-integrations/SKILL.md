@@ -95,8 +95,9 @@ SLACK_SEND_MESSAGE({
   `curl`, or raw REST endpoints to substitute. Stop and tell the user to
   connect that toolkit in the Integrations tab.
 - For HubSpot specifically the agent is bounded to read-only CRM scopes
-  (contacts, companies, deals, tickets, pipelines, account info). It
-  cannot write to HubSpot in this deployment.
+  (contacts, companies, deals, pipelines, account info). Tickets are
+  intentionally out of scope. The agent cannot write to HubSpot in this
+  deployment.
 
 ## Pagination
 
@@ -127,7 +128,6 @@ context.
 | List deals | `HUBSPOT_LIST_DEALS` | `limit` |
 | Get deal | `HUBSPOT_GET_DEAL` | `dealId` |
 | Search deals | `HUBSPOT_SEARCH_DEALS` | `filterGroups`, `properties`, `limit` |
-| List tickets | `HUBSPOT_LIST_TICKETS` | `limit` |
 | Get pipeline | `HUBSPOT_GET_PIPELINE_BY_ID` | `pipelineId`, `objectType` |
 | Account info | `HUBSPOT_GET_ACCOUNT_INFO` | (none) |
 
