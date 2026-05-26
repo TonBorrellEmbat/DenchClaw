@@ -1,89 +1,85 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-let stateDir = "";
-
-vi.mock("@/lib/workspace", () => ({
-  resolveOpenClawStateDir: vi.fn(() => stateDir),
-}));
 
 const {
   disconnectComposioApp,
   fetchComposioMcpToolsList,
+  resolveComposioApiKey,
+  resolveComposioEligibility,
   resolveComposioGatewayUrl,
 } = await import("./composio");
 
 describe("composio config resolution", () => {
   beforeEach(() => {
-    stateDir = path.join(os.tmpdir(), `dench-composio-state-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    mkdirSync(stateDir, { recursive: true });
+    delete process.env.COMPOSIO_BASE_URL;
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.DENCH_GATEWAY_URL;
+    delete process.env.DENCH_CLOUD_API_KEY;
+    delete process.env.DENCH_API_KEY;
   });
 
   afterEach(() => {
-    rmSync(stateDir, { recursive: true, force: true });
+    delete process.env.COMPOSIO_BASE_URL;
+    delete process.env.COMPOSIO_API_KEY;
+    delete process.env.DENCH_GATEWAY_URL;
+    delete process.env.DENCH_CLOUD_API_KEY;
+    delete process.env.DENCH_API_KEY;
     vi.restoreAllMocks();
   });
 
-  it("prefers the Dench Cloud provider baseUrl when resolving the Composio gateway URL", () => {
-    writeFileSync(
-      path.join(stateDir, "openclaw.json"),
-      JSON.stringify({
-        models: {
-          providers: {
-            "dench-cloud": {
-              baseUrl: "https://gateway.example.com/v1",
-            },
-          },
-        },
-        plugins: {
-          entries: {
-            "dench-ai-gateway": {
-              config: {
-                gatewayUrl: "https://stale-plugin.example.com",
-              },
-            },
-          },
-        },
-      }),
-      "utf-8",
-    );
-
-    expect(resolveComposioGatewayUrl()).toBe("https://gateway.example.com");
+  it("defaults the API base URL to Composio's production host", () => {
+    expect(resolveComposioGatewayUrl()).toBe("https://backend.composio.dev");
   });
 
-  it("passes connected toolkit and preferred tool hints to the gateway tools/list probe", async () => {
+  it("lets COMPOSIO_BASE_URL override the default base", () => {
+    process.env.COMPOSIO_BASE_URL = "https://staging-backend.composio.dev";
+    expect(resolveComposioGatewayUrl()).toBe("https://staging-backend.composio.dev");
+  });
+
+  it("still honours DENCH_GATEWAY_URL for callers who only have the old env var configured", () => {
+    process.env.DENCH_GATEWAY_URL = "https://legacy.example.com";
+    expect(resolveComposioGatewayUrl()).toBe("https://legacy.example.com");
+  });
+
+  it("reads COMPOSIO_API_KEY when set", () => {
+    process.env.COMPOSIO_API_KEY = "co_test_key";
+    expect(resolveComposioApiKey()).toBe("co_test_key");
+  });
+
+  it("falls back to DENCH_CLOUD_API_KEY for the legacy env var name", () => {
+    process.env.DENCH_CLOUD_API_KEY = "dc_legacy_key";
+    expect(resolveComposioApiKey()).toBe("dc_legacy_key");
+  });
+
+  it("returns ineligible when no API key is configured", () => {
+    const result = resolveComposioEligibility();
+    expect(result.eligible).toBe(false);
+    expect(result.lockReason).toBe("missing_dench_key");
+  });
+
+  it("returns eligible whenever a Composio API key is configured", () => {
+    process.env.COMPOSIO_API_KEY = "co_test_key";
+    expect(resolveComposioEligibility()).toEqual({
+      eligible: true,
+      lockReason: null,
+      lockBadge: null,
+    });
+  });
+
+  it("fetchComposioMcpToolsList is stubbed in phase 1 — returns [] without calling fetch", async () => {
+    // Phase 1 ships the integrations UI only. The agent-side MCP swap (phase
+    // 2) will re-implement this against Composio's `/api/v3.1/mcp/servers`
+    // and the per-server `mcp_url`. Until then we degrade the status route
+    // gracefully instead of pretending the Dench gateway is still there.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({
-        result: {
-          tools: [],
-        },
-      })),
+      new Response("{}", { status: 200 }),
     );
-
-    await fetchComposioMcpToolsList(
-      "https://gateway.example.com",
-      "dench_test_key",
-      {
-        connectedToolkits: ["gmail", "slack"],
-        preferredToolNames: ["GMAIL_FETCH_EMAILS", "SLACK_SEND_MESSAGE"],
-      },
+    const tools = await fetchComposioMcpToolsList(
+      "https://backend.composio.dev",
+      "co_test_key",
+      { connectedToolkits: ["gmail"], preferredToolNames: ["GMAIL_FETCH_EMAILS"] },
     );
-
-    const [, init] = fetchSpy.mock.calls[0];
-    const body = JSON.parse(String(init?.body)) as {
-      params: {
-        connected_toolkits: string[];
-        preferred_tool_names: string[];
-      };
-    };
-
-    expect(body.params.connected_toolkits).toEqual(["gmail", "slack"]);
-    expect(body.params.preferred_tool_names).toEqual([
-      "GMAIL_FETCH_EMAILS",
-      "SLACK_SEND_MESSAGE",
-    ]);
+    expect(tools).toEqual([]);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -154,29 +150,30 @@ describe("disconnectComposioApp", () => {
     ).rejects.toThrow(/Failed to disconnect.*502/);
   });
 
-  it("hits the right URL with DELETE + Bearer auth", async () => {
+  it("hits Composio's connected_accounts endpoint with DELETE + x-api-key auth", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ deleted: true }), { status: 200 }),
     );
     await disconnectComposioApp("https://gw.example.com", "secret_key", "ca_abc");
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe("https://gw.example.com/v1/composio/connections/ca_abc");
+    expect(url).toBe("https://gw.example.com/api/v3.1/connected_accounts/ca_abc");
     expect(init?.method).toBe("DELETE");
     const headers = new Headers(init?.headers as HeadersInit);
-    expect(headers.get("authorization")).toBe("Bearer secret_key");
+    expect(headers.get("x-api-key")).toBe("secret_key");
+    expect(headers.get("authorization")).toBeNull();
   });
 
   it("URL-encodes weird connection ids defensively", async () => {
     // Composio ids are usually slug-safe, but we encode anyway so a
     // future id format with `/` or `%` doesn't punch through to a
-    // different gateway path.
+    // different path.
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ deleted: true }), { status: 200 }),
     );
     await disconnectComposioApp("https://gw.example.com", "k", "ca/with weird?chars");
     const [url] = fetchSpy.mock.calls[0];
     expect(url).toBe(
-      "https://gw.example.com/v1/composio/connections/ca%2Fwith%20weird%3Fchars",
+      "https://gw.example.com/api/v3.1/connected_accounts/ca%2Fwith%20weird%3Fchars",
     );
   });
 });

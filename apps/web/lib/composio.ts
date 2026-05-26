@@ -1,10 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { resolveOpenClawStateDir } from "@/lib/workspace";
 import { normalizeComposioToolkitSlug } from "@/lib/composio-normalization";
-import { readConfiguredDenchCloudSettings } from "../../../src/cli/dench-cloud";
 
-const DEFAULT_GATEWAY_URL = "https://gateway.merseoriginals.com";
+// Direct Composio base URL. We've stripped out the Dench Cloud gateway proxy
+// so the integrations UI talks to Composio's public REST API with the user's
+// own COMPOSIO_API_KEY. The variable name still says "gateway" because too
+// many call sites reference it; treat it as the Composio API base.
+const DEFAULT_GATEWAY_URL = "https://backend.composio.dev";
+
+// Composio "user_id" partition for this single-tenant deployment. Connected
+// accounts are stored under this id; if you ever multi-tenant this fork,
+// derive it from the request session instead.
+const COMPOSIO_DEFAULT_USER_ID = "default";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -299,47 +304,24 @@ export function normalizeComposioConnections(
 }
 
 // ---------------------------------------------------------------------------
-// Config resolution (mirrors integrations.ts patterns)
+// Config resolution
 // ---------------------------------------------------------------------------
 
-function readConfig(): UnknownRecord {
-  const configPath = join(resolveOpenClawStateDir(), "openclaw.json");
-  if (!existsSync(configPath)) return {};
-  try {
-    return (JSON.parse(readFileSync(configPath, "utf-8")) as UnknownRecord) ?? {};
-  } catch {
-    return {};
-  }
-}
-
 export function resolveComposioGatewayUrl(): string {
-  const config = readConfig();
-  const settings = readConfiguredDenchCloudSettings(config);
-  const plugins = asRecord(config.plugins);
-  const pluginEntries = asRecord(plugins?.entries);
-  const gatewayConfig = asRecord(asRecord(pluginEntries?.["dench-ai-gateway"])?.config);
   return (
-    settings.gatewayUrl ||
-    readString(gatewayConfig?.gatewayUrl) ||
+    process.env.COMPOSIO_BASE_URL?.trim() ||
     process.env.DENCH_GATEWAY_URL?.trim() ||
     DEFAULT_GATEWAY_URL
   );
 }
 
 export function resolveComposioApiKey(): string | null {
-  const config = readConfig();
-  const models = asRecord(config.models);
-  const provider = asRecord(asRecord(models?.providers)?.["dench-cloud"]);
-  if (readString(provider?.apiKey)) {
-    return readString(provider?.apiKey) ?? null;
-  }
-  if (process.env.DENCH_CLOUD_API_KEY?.trim()) {
-    return process.env.DENCH_CLOUD_API_KEY.trim();
-  }
-  if (process.env.DENCH_API_KEY?.trim()) {
-    return process.env.DENCH_API_KEY.trim();
-  }
-  return null;
+  return (
+    process.env.COMPOSIO_API_KEY?.trim() ||
+    process.env.DENCH_CLOUD_API_KEY?.trim() ||
+    process.env.DENCH_API_KEY?.trim() ||
+    null
+  );
 }
 
 export function resolveComposioEligibility(): {
@@ -347,26 +329,11 @@ export function resolveComposioEligibility(): {
   lockReason: "missing_dench_key" | "dench_not_primary" | null;
   lockBadge: string | null;
 } {
-  const config = readConfig();
-  const apiKey = resolveComposioApiKey();
-  if (!apiKey) {
+  if (!resolveComposioApiKey()) {
     return {
       eligible: false,
       lockReason: "missing_dench_key",
-      lockBadge: "Get Dench Cloud API Key",
-    };
-  }
-  const agents = asRecord(config.agents);
-  const defaults = asRecord(agents?.defaults);
-  const model = defaults?.model;
-  const primary = typeof model === "string"
-    ? readString(model)
-    : readString(asRecord(model)?.primary);
-  if (!primary?.startsWith("dench-cloud/")) {
-    return {
-      eligible: false,
-      lockReason: "dench_not_primary",
-      lockBadge: "Use Dench Cloud",
+      lockBadge: "Add Composio API Key",
     };
   }
   return { eligible: true, lockReason: null, lockBadge: null };
@@ -382,12 +349,12 @@ async function gatewayFetch(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
-  const url = `${gatewayUrl}${path}`;
+  const url = `${gatewayUrl.replace(/\/$/, "")}${path}`;
   return fetch(url, {
     ...init,
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
+      "x-api-key": apiKey,
       ...init?.headers,
     },
   });
@@ -427,7 +394,7 @@ export async function fetchComposioToolkits(
   if (options?.cursor) params.set("cursor", options.cursor);
   if (options?.limit) params.set("limit", String(options.limit));
   const qs = params.toString();
-  const path = `/v1/composio/toolkits${qs ? `?${qs}` : ""}`;
+  const path = `/api/v3.1/toolkits${qs ? `?${qs}` : ""}`;
   const res = await gatewayFetch(gatewayUrl, apiKey, path);
   if (!res.ok) {
     throw new Error(`Failed to fetch toolkits (HTTP ${res.status})`);
@@ -440,11 +407,61 @@ export async function fetchComposioConnections(
   gatewayUrl: string,
   apiKey: string,
 ): Promise<ComposioConnectionsResponse> {
-  const res = await gatewayFetch(gatewayUrl, apiKey, "/v1/composio/connections");
+  const res = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/connected_accounts");
   if (!res.ok) {
     throw new Error(`Failed to fetch connections (HTTP ${res.status})`);
   }
   return res.json() as Promise<ComposioConnectionsResponse>;
+}
+
+/**
+ * Look up an existing Composio-managed auth_config for the toolkit, or create one.
+ * Composio requires an auth_config before you can create a connected_account, and
+ * the user shouldn't have to manage that — we transparently provision a managed
+ * OAuth config on first connect.
+ */
+async function ensureAuthConfigForToolkit(
+  gatewayUrl: string,
+  apiKey: string,
+  toolkitSlug: string,
+): Promise<string> {
+  const listParams = new URLSearchParams({ toolkit_slugs: toolkitSlug, limit: "20" });
+  const listRes = await gatewayFetch(
+    gatewayUrl,
+    apiKey,
+    `/api/v3.1/auth_configs?${listParams.toString()}`,
+  );
+  if (listRes.ok) {
+    const body = (await listRes.json()) as UnknownRecord;
+    const items = Array.isArray(body.items) ? body.items : [];
+    for (const raw of items) {
+      const item = asRecord(raw);
+      const id = readString(item?.id);
+      if (id && readString(item?.toolkit_slug ?? asRecord(item?.toolkit)?.slug) === toolkitSlug) {
+        return id;
+      }
+    }
+  }
+
+  const createRes = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/auth_configs", {
+    method: "POST",
+    body: JSON.stringify({
+      toolkit: { slug: toolkitSlug },
+      auth_config: { type: "use_composio_managed_auth" },
+    }),
+  });
+  if (!createRes.ok) {
+    const detail = await createRes.text().catch(() => "");
+    throw new Error(
+      `Failed to create managed auth config for ${toolkitSlug} (HTTP ${createRes.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+    );
+  }
+  const created = (await createRes.json()) as UnknownRecord;
+  const id = readString(asRecord(created.auth_config)?.id) ?? readString(created.id);
+  if (!id) {
+    throw new Error(`Composio returned no auth_config id for ${toolkitSlug}`);
+  }
+  return id;
 }
 
 export async function initiateComposioConnect(
@@ -453,9 +470,17 @@ export async function initiateComposioConnect(
   toolkit: string,
   callbackUrl: string,
 ): Promise<ComposioConnectResponse> {
-  const res = await gatewayFetch(gatewayUrl, apiKey, "/v1/composio/connect", {
+  const authConfigId = await ensureAuthConfigForToolkit(gatewayUrl, apiKey, toolkit);
+
+  const res = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/connected_accounts", {
     method: "POST",
-    body: JSON.stringify({ toolkit, callback_url: callbackUrl }),
+    body: JSON.stringify({
+      auth_config: { id: authConfigId },
+      connection: {
+        callback_url: callbackUrl,
+        user_id: COMPOSIO_DEFAULT_USER_ID,
+      },
+    }),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => "");
@@ -463,7 +488,27 @@ export async function initiateComposioConnect(
       `Failed to initiate connection for ${toolkit} (HTTP ${res.status})${detail ? `: ${detail}` : ""}`,
     );
   }
-  return res.json() as Promise<ComposioConnectResponse>;
+
+  // Composio's response shape differs from Dench's gateway. Normalize to the
+  // ComposioConnectResponse the UI expects: it needs a redirect URL the
+  // browser can open, plus enough identifiers to track the new connection.
+  const raw = (await res.json()) as UnknownRecord;
+  const connectionData = asRecord(raw.connectionData);
+  const connectionVal = asRecord(connectionData?.val);
+  const redirectUrl =
+    readString(raw.redirect_url) ??
+    readString(raw.redirect_uri) ??
+    readString(connectionVal?.redirectUrl) ??
+    readString(connectionVal?.redirect_url) ??
+    null;
+  const id = readString(raw.id);
+
+  return {
+    ...(raw as object),
+    connection_id: id ?? null,
+    redirect_url: redirectUrl,
+    toolkit,
+  } as ComposioConnectResponse;
 }
 
 export type DisconnectComposioAppResult = {
@@ -491,7 +536,7 @@ export async function disconnectComposioApp(
   const res = await gatewayFetch(
     gatewayUrl,
     apiKey,
-    `/v1/composio/connections/${encodeURIComponent(connectionId)}`,
+    `/api/v3.1/connected_accounts/${encodeURIComponent(connectionId)}`,
     { method: "DELETE" },
   );
   if (res.status === 404) {
@@ -624,9 +669,31 @@ async function parseMcpToolsListResponse(res: Response): Promise<{
 }
 
 /**
- * Lists all tools exposed by the Composio MCP bridge on the gateway (JSON-RPC `tools/list`).
+ * Lists all tools exposed by Composio's MCP bridge (JSON-RPC `tools/list`).
+ *
+ * The Dench Cloud gateway exposed a single `/v1/composio/mcp` endpoint that
+ * proxied to Composio's MCP. Composio itself has no equivalent single URL —
+ * each MCP server has its own URL returned by `/api/v3.1/mcp/servers`.
+ *
+ * For Phase 1 (UI-only) we don't need this — the integrations UI does fine
+ * without the MCP health check. The agent-side switch (phase 2) will create
+ * a Composio MCP server per workspace and use its `mcp_url`. Until then we
+ * return an empty list so the `/api/composio/status` route still answers.
  */
 export async function fetchComposioMcpToolsList(
+  _gatewayUrl: string,
+  _apiKey: string,
+  _options?: {
+    connectedToolkits?: string[];
+    preferredToolNames?: string[];
+    connectedAccountId?: string;
+  },
+): Promise<ComposioMcpTool[]> {
+  return [];
+}
+
+// Legacy implementation kept for reference; remove once phase 2 lands.
+async function _legacyFetchComposioMcpToolsList(
   gatewayUrl: string,
   apiKey: string,
   options?: {

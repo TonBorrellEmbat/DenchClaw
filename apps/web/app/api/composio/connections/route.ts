@@ -127,7 +127,7 @@ export async function GET(request: Request) {
   if (!eligibility.eligible) {
     return Response.json(
       {
-        error: "Dench Cloud must be the primary provider.",
+        error: "Composio API key is required.",
         lockReason: eligibility.lockReason,
         lockBadge: eligibility.lockBadge,
       },
