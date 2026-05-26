@@ -648,24 +648,37 @@ function resolveDenchCloudEligibility(
 ): DenchCloudEligibility {
   const primaryModel = resolvePrimaryModel(config);
   const isPrimaryProvider = Boolean(primaryModel?.startsWith("dench-cloud/"));
+
+  // Composio-direct fork: when COMPOSIO_API_KEY is set we talk to Composio
+  // directly. The `hasKey`/`isPrimaryProvider` flags are what the UI uses
+  // to decide whether to render the Composio Apps section, so we surface
+  // them as true. We deliberately keep `locked: true` so the Dench
+  // first-party integrations (Exa, Apollo, ElevenLabs) — which DO need a
+  // real Dench key — still report as locked downstream.
+  const hasComposioKey = Boolean(process.env.COMPOSIO_API_KEY?.trim());
+
   if (!auth.configured) {
+    // No Dench key. UI gate (hasKey && isPrimaryProvider) follows the
+    // Composio key when present, so the integrations panel renders.
+    // `locked: true` stays so Dench's own integrations (Exa/Apollo/...) keep
+    // their per-row lock badge.
     return {
-      hasKey: false,
-      isPrimaryProvider,
+      hasKey: hasComposioKey,
+      isPrimaryProvider: hasComposioKey || isPrimaryProvider,
       primaryModel,
       locked: true,
       lockReason: "missing_dench_key",
-      lockBadge: "Get Dench Cloud API Key",
+      lockBadge: hasComposioKey ? null : "Add Composio API Key",
     };
   }
   if (!isPrimaryProvider) {
     return {
       hasKey: true,
-      isPrimaryProvider: false,
+      isPrimaryProvider: hasComposioKey ? true : false,
       primaryModel,
       locked: true,
       lockReason: "dench_not_primary",
-      lockBadge: "Use Dench Cloud",
+      lockBadge: hasComposioKey ? null : "Use Dench Cloud",
     };
   }
   return {

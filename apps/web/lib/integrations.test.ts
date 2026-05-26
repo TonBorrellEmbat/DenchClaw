@@ -299,7 +299,7 @@ describe("integrations state", () => {
     for (const integration of state.integrations) {
       expect(integration.locked).toBe(true);
       expect(integration.lockReason).toBe("missing_dench_key");
-      expect(integration.lockBadge).toBe("Get Dench Cloud API Key");
+      expect(integration.lockBadge).toBe("Add Composio API Key");
       expect(integration.enabled).toBe(false);
     }
   });
