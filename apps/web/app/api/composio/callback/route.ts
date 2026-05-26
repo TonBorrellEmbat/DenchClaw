@@ -1,5 +1,6 @@
 import {
   fetchComposioConnections,
+  provisionAndRegisterComposioMcp,
   resolveComposioApiKey,
   resolveComposioGatewayUrl,
 } from "@/lib/composio";
@@ -113,6 +114,36 @@ export async function GET(request: Request) {
     resolvedConnection = await resolveConnectedConnection(connectedAccountId);
     if (resolvedConnection) {
       persistLocalSyncConnection(resolvedConnection);
+
+      // Provision a Composio MCP server pinned to this toolkit + auth_config
+      // and write it to openclaw.json so the OpenClaw agent picks the tools
+      // up natively. This is what closes the loop between "Composio shows
+      // the connection" and "the agent can actually call HubSpot tools" —
+      // without it, the agent only sees the dench_search_integrations stubs
+      // and gets nothing back.
+      const gatewayUrl = resolveComposioGatewayUrl();
+      const apiKey = resolveComposioApiKey();
+      const toolkitSlug = resolvedConnection.normalized_toolkit_slug;
+      const readNonEmpty = (v: unknown): string | undefined =>
+        typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
+      const conn = resolvedConnection as Record<string, unknown>;
+      const authConfigId =
+        readNonEmpty(conn.auth_config_id) ??
+        readNonEmpty((conn.auth_config as { id?: unknown } | undefined)?.id);
+      if (apiKey && toolkitSlug && authConfigId) {
+        void provisionAndRegisterComposioMcp({
+          gatewayUrl,
+          apiKey,
+          toolkitSlug,
+          authConfigId,
+          userId: "default",
+        }).catch(() => {
+          // Best-effort. If provisioning fails the UI still shows the
+          // connection as established (Phase 1 behavior); the user just
+          // doesn't get the agent-side tools automatically. They can re-run
+          // openclaw mcp set manually as a fallback.
+        });
+      }
     }
     void (async () => {
       try {

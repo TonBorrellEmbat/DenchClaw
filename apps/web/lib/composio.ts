@@ -927,3 +927,213 @@ async function _legacyFetchComposioMcpToolsList(
     cursor = parsed.nextCursor;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Composio MCP server provisioning + openclaw.json registration
+// ---------------------------------------------------------------------------
+//
+// After a successful OAuth callback we want the connected toolkit's tools to
+// be immediately visible to the OpenClaw agent — not just sit in Composio.
+// Composio publishes per-account MCP servers; we create one (or reuse the
+// existing one) scoped to the just-connected auth_config and write its URL
+// to /data/.openclaw-dench/openclaw.json under `mcp.servers.<toolkit>`.
+// OpenClaw's native MCP client picks up the entry, lists the tools, and the
+// agent gets them on the next session reload.
+
+type ComposioMcpServer = {
+  id: string;
+  name: string;
+  mcp_url: string;
+  auth_config_ids: string[];
+  allowed_tools?: string[];
+};
+
+/**
+ * Find or create a Composio MCP server for this toolkit + auth_config.
+ *
+ * Reuses an existing server when one already has the same auth_config_id and
+ * naming convention, so retrying Connect doesn't accumulate stray servers in
+ * the user's Composio account. When no preset tools list is defined for the
+ * toolkit, the MCP server exposes every tool the auth_config has access to.
+ */
+async function ensureComposioMcpServer(params: {
+  gatewayUrl: string;
+  apiKey: string;
+  toolkitSlug: string;
+  authConfigId: string;
+}): Promise<ComposioMcpServer | null> {
+  const presetTools =
+    COMPOSIO_TOOLKIT_TOOL_PRESETS[params.toolkitSlug.toLowerCase()] ?? null;
+  const serverName = `alphadench-${params.toolkitSlug.toLowerCase()}`.slice(0, 30);
+
+  // 1) Look for an existing server pinned to this auth_config_id. The list
+  //    endpoint accepts a comma-separated filter; we narrow by auth_config_id
+  //    so we don't accidentally clash with someone else's server.
+  const listParams = new URLSearchParams({
+    auth_config_ids: params.authConfigId,
+    limit: "50",
+  });
+  const listRes = await gatewayFetch(
+    params.gatewayUrl,
+    params.apiKey,
+    `/api/v3.1/mcp/servers?${listParams.toString()}`,
+  );
+  if (listRes.ok) {
+    const body = (await listRes.json()) as UnknownRecord;
+    const items = Array.isArray(body.items) ? body.items : [];
+    for (const raw of items) {
+      const item = asRecord(raw);
+      const id = readString(item?.id);
+      const mcpUrl = readString(item?.mcp_url);
+      const name = readString(item?.name) ?? "";
+      if (id && mcpUrl && name === serverName) {
+        return {
+          id,
+          name,
+          mcp_url: mcpUrl,
+          auth_config_ids: readStringArray(item?.auth_config_ids),
+          allowed_tools: readStringArray(item?.allowed_tools),
+        };
+      }
+    }
+  }
+
+  // 2) None found — create one.
+  const createBody: UnknownRecord = {
+    name: serverName,
+    auth_config_ids: [params.authConfigId],
+    managed_auth_via_composio: false,
+  };
+  if (presetTools && presetTools.length > 0) {
+    createBody.allowed_tools = presetTools;
+  }
+  const createRes = await gatewayFetch(
+    params.gatewayUrl,
+    params.apiKey,
+    "/api/v3.1/mcp/servers",
+    { method: "POST", body: JSON.stringify(createBody) },
+  );
+  if (!createRes.ok) {
+    return null;
+  }
+  const created = (await createRes.json()) as UnknownRecord;
+  const id = readString(created.id);
+  const mcpUrl = readString(created.mcp_url);
+  if (!id || !mcpUrl) {
+    return null;
+  }
+  return {
+    id,
+    name: readString(created.name) ?? serverName,
+    mcp_url: mcpUrl,
+    auth_config_ids: readStringArray(created.auth_config_ids),
+    allowed_tools: readStringArray(created.allowed_tools),
+  };
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+/**
+ * Register the Composio MCP server in openclaw.json so the OpenClaw agent
+ * picks up the tools natively.
+ *
+ * URL gets a `user_id` query parameter because Composio's MCP endpoint
+ * returns 401 without one ("user_id or connected_account_id query parameter
+ * is required for security reasons").
+ *
+ * Auth header is written as the literal string `${COMPOSIO_API_KEY}` rather
+ * than the actual value, so:
+ *   - At runtime, OpenClaw / the openclaw-render-template wrapper resolve
+ *     env-var references in config (the AlphaClaw README documents secrets
+ *     using this pattern).
+ *   - When the workspace gets committed to GitHub, the literal `${...}`
+ *     reference is what lands in the repo — not the real key.
+ */
+export function registerComposioMcpInOpenClaw(params: {
+  toolkitSlug: string;
+  mcpUrl: string;
+  userId: string;
+  apiKeyEnvVar: string;
+}): void {
+  const slug = params.toolkitSlug.toLowerCase();
+  const url = new URL(params.mcpUrl);
+  if (!url.searchParams.has("user_id")) {
+    url.searchParams.set("user_id", params.userId);
+  }
+
+  const fs = require("node:fs") as typeof import("node:fs");
+  const path = require("node:path") as typeof import("node:path");
+  // Use the same state-dir resolver the rest of DenchClaw uses so we always
+  // target the right openclaw.json across profiles.
+  const { resolveOpenClawStateDir } = require("@/lib/workspace") as {
+    resolveOpenClawStateDir: () => string;
+  };
+  const configPath = path.join(resolveOpenClawStateDir(), "openclaw.json");
+
+  let config: UnknownRecord = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      config = JSON.parse(fs.readFileSync(configPath, "utf-8")) as UnknownRecord;
+    } catch {
+      config = {};
+    }
+  }
+
+  const mcp = asRecord(config.mcp) ?? {};
+  const servers = asRecord(mcp.servers) ?? {};
+  servers[slug] = {
+    url: url.toString(),
+    transport: "streamable-http",
+    headers: {
+      "x-api-key": `\${${params.apiKeyEnvVar}}`,
+    },
+  };
+  mcp.servers = servers;
+  config.mcp = mcp;
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf-8");
+}
+
+/**
+ * One-shot: provision Composio MCP server for the just-connected toolkit
+ * and register it in openclaw.json. Safe to call after every OAuth callback
+ * — both steps are idempotent.
+ */
+export async function provisionAndRegisterComposioMcp(params: {
+  gatewayUrl: string;
+  apiKey: string;
+  toolkitSlug: string;
+  authConfigId: string;
+  userId: string;
+}): Promise<{ ok: boolean; mcpUrl?: string; reason?: string }> {
+  try {
+    const server = await ensureComposioMcpServer({
+      gatewayUrl: params.gatewayUrl,
+      apiKey: params.apiKey,
+      toolkitSlug: params.toolkitSlug,
+      authConfigId: params.authConfigId,
+    });
+    if (!server) {
+      return { ok: false, reason: "Composio MCP server provisioning failed." };
+    }
+    registerComposioMcpInOpenClaw({
+      toolkitSlug: params.toolkitSlug,
+      mcpUrl: server.mcp_url,
+      userId: params.userId,
+      apiKeyEnvVar: "COMPOSIO_API_KEY",
+    });
+    return { ok: true, mcpUrl: server.mcp_url };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: err instanceof Error ? err.message : "Unknown error",
+    };
+  }
+}

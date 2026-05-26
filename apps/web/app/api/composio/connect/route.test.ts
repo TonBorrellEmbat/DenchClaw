@@ -117,17 +117,17 @@ describe("Composio connect API", () => {
     );
   });
 
-  it("prefers X-Forwarded-* headers over DENCHCLAW_PUBLIC_URL — needed for warm-pool rebinds where the running container has a stale env value", async () => {
+  it("prefers DENCHCLAW_PUBLIC_URL over X-Forwarded-* headers — AlphaClaw-fronted deploys have forwarded headers that point at the in-container loopback, not the public host", async () => {
     process.env.DENCHCLAW_PUBLIC_URL =
-      "https://stale-warm-pool-slug.sandbox.merseoriginals.com";
+      "https://alphadench.onrender.com";
 
     const response = await POST(
       new Request("http://localhost/api/composio/connect", {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-forwarded-host": "real-org.sandbox.merseoriginals.com",
-          "x-forwarded-proto": "https",
+          "x-forwarded-host": "127.0.0.1:3100",
+          "x-forwarded-proto": "http",
         },
         body: JSON.stringify({ toolkit: "zoho" }),
       }),
@@ -138,7 +138,7 @@ describe("Composio connect API", () => {
       "https://gateway.example.com",
       "dench_test_key",
       "zoho",
-      "https://real-org.sandbox.merseoriginals.com/api/composio/callback",
+      "https://alphadench.onrender.com/api/composio/callback",
     );
   });
 

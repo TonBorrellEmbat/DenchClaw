@@ -171,23 +171,23 @@ describe("Composio callback API", () => {
     expect(html).not.toContain('"http://localhost:3100"');
   });
 
-  it("prefers X-Forwarded-Host so the postMessage targetOrigin reflects the actual public host", async () => {
-    process.env.DENCHCLAW_PUBLIC_URL = "https://stale.sandbox.merseoriginals.com";
+  it("prefers DENCHCLAW_PUBLIC_URL over X-Forwarded-Host for the postMessage targetOrigin — AlphaClaw-fronted deploys produce forwarded headers that point at the in-container loopback", async () => {
+    process.env.DENCHCLAW_PUBLIC_URL = "https://alphadench.onrender.com";
 
     const response = await GET(
       new Request(
         "http://localhost:3100/api/composio/callback?status=success&connected_account_id=acct_123",
         {
           headers: {
-            "x-forwarded-host": "real-org.sandbox.merseoriginals.com",
-            "x-forwarded-proto": "https",
+            "x-forwarded-host": "127.0.0.1:3100",
+            "x-forwarded-proto": "http",
           },
         },
       ),
     );
 
     const html = await response.text();
-    expect(html).toContain('"https://real-org.sandbox.merseoriginals.com"');
-    expect(html).not.toContain('"https://stale.sandbox.merseoriginals.com"');
+    expect(html).toContain('"https://alphadench.onrender.com"');
+    expect(html).not.toContain('"http://127.0.0.1:3100"');
   });
 });
