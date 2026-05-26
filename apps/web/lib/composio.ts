@@ -415,16 +415,71 @@ export async function fetchComposioConnections(
 }
 
 /**
+ * Per-toolkit "starter" tool sets used to narrow the OAuth scopes requested
+ * during connect. Composio computes the minimum scopes needed for the listed
+ * tools and uses ONLY those — so the consent screen drops from "everything"
+ * to just what the listed tools actually need.
+ *
+ * If a toolkit isn't in this map, Composio falls back to its managed-auth
+ * default (the broad superset), which is what we had before.
+ *
+ * Edit these lists to widen/narrow the agent's surface; the next connect
+ * picks the new set up automatically.
+ */
+const COMPOSIO_TOOLKIT_TOOL_PRESETS: Record<string, string[]> = {
+  hubspot: [
+    // Contacts
+    "HUBSPOT_LIST_CONTACTS",
+    "HUBSPOT_READ_CONTACT",
+    "HUBSPOT_READ_CONTACTS",
+    "HUBSPOT_SEARCH_CONTACTS_BY_CRITERIA",
+    "HUBSPOT_LIST_CONTACT_PROPERTIES",
+    // Companies
+    "HUBSPOT_LIST_COMPANIES",
+    "HUBSPOT_GET_COMPANY",
+    "HUBSPOT_SEARCH_COMPANIES",
+    "HUBSPOT_BATCH_READ_COMPANIES_BY_PROPERTIES",
+    // Deals
+    "HUBSPOT_LIST_DEALS",
+    "HUBSPOT_GET_DEAL",
+    "HUBSPOT_GET_DEALS",
+    "HUBSPOT_SEARCH_DEALS",
+    // Tickets
+    "HUBSPOT_LIST_TICKETS",
+    "HUBSPOT_GET_TICKET",
+    "HUBSPOT_GET_TICKETS",
+    "HUBSPOT_SEARCH_TICKETS",
+    // Generic CRM object reads / cross-object associations / pipelines
+    "HUBSPOT_READ_CRM_OBJECT_BY_ID",
+    "HUBSPOT_SEARCH_CRM_OBJECTS_BY_CRITERIA",
+    "HUBSPOT_READ_APAGE_OF_OBJECTS_BY_TYPE",
+    "HUBSPOT_LIST_OBJECT_ASSOCIATIONS",
+    "HUBSPOT_GET_PIPELINE_BY_ID",
+    "HUBSPOT_GET_ACCOUNT_INFO",
+    "HUBSPOT_LIST_GRANTED_SCOPES",
+  ],
+};
+
+/**
  * Look up an existing Composio-managed auth_config for the toolkit, or create one.
- * Composio requires an auth_config before you can create a connected_account, and
- * the user shouldn't have to manage that — we transparently provision a managed
- * OAuth config on first connect.
+ *
+ * Composio requires an auth_config before you can create a connected_account.
+ * When a preset of tools is defined for this toolkit we narrow the OAuth scopes
+ * Composio requests via `tool_access_config.tools_for_connected_account_creation`.
+ * Without that field, Composio's managed auth requests its full default scope
+ * superset (which on HubSpot includes admin-level user management).
+ *
+ * Existing auth_configs that were created before scope narrowing are PATCHed
+ * to the new tool list on the next connect, so a user re-trying after a
+ * version bump gets the narrower consent screen automatically.
  */
 async function ensureAuthConfigForToolkit(
   gatewayUrl: string,
   apiKey: string,
   toolkitSlug: string,
 ): Promise<string> {
+  const presetTools = COMPOSIO_TOOLKIT_TOOL_PRESETS[toolkitSlug.toLowerCase()] ?? null;
+
   const listParams = new URLSearchParams({ toolkit_slugs: toolkitSlug, limit: "20" });
   const listRes = await gatewayFetch(
     gatewayUrl,
@@ -438,17 +493,41 @@ async function ensureAuthConfigForToolkit(
       const item = asRecord(raw);
       const id = readString(item?.id);
       if (id && readString(item?.toolkit_slug ?? asRecord(item?.toolkit)?.slug) === toolkitSlug) {
+        if (presetTools && presetTools.length > 0) {
+          // Realign existing auth_config to current preset. This is the path
+          // that gets a user from "Composio asked for everything" to
+          // "Composio asked for only the tools we listed" without having to
+          // delete and re-create the auth_config by hand.
+          await gatewayFetch(gatewayUrl, apiKey, `/api/v3.1/auth_configs/${encodeURIComponent(id)}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              // Composio's PATCH endpoint discriminates by `type`; "default"
+              // selects managed auth, "custom" selects BYO. Without `type`
+              // the request 400s with "Invalid discriminator value".
+              type: "default",
+              tool_access_config: {
+                tools_for_connected_account_creation: presetTools,
+              },
+            }),
+          });
+        }
         return id;
       }
     }
   }
 
+  const createBody: UnknownRecord = {
+    toolkit: { slug: toolkitSlug },
+    auth_config: { type: "use_composio_managed_auth" },
+  };
+  if (presetTools && presetTools.length > 0) {
+    (createBody.auth_config as UnknownRecord).tool_access_config = {
+      tools_for_connected_account_creation: presetTools,
+    };
+  }
   const createRes = await gatewayFetch(gatewayUrl, apiKey, "/api/v3.1/auth_configs", {
     method: "POST",
-    body: JSON.stringify({
-      toolkit: { slug: toolkitSlug },
-      auth_config: { type: "use_composio_managed_auth" },
-    }),
+    body: JSON.stringify(createBody),
   });
   if (!createRes.ok) {
     const detail = await createRes.text().catch(() => "");
