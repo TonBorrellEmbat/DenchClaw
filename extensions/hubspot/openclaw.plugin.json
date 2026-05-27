@@ -1,0 +1,13 @@
+{
+  "id": "hubspot",
+  "name": "HubSpot (direct)",
+  "version": "1.0.0",
+  "description": "Read-only HubSpot CRM tools. Uses HUBSPOT_PRIVATE_APP_TOKEN to call api.hubapi.com directly — no Composio or other middleman.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true }
+    }
+  }
+}

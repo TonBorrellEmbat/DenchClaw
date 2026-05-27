@@ -3483,7 +3483,21 @@ export async function bootstrapCommand(
     {
       pluginId: "dench-identity",
       sourceDirName: "dench-identity",
-      enabled: true,
+      // Disabled in the AlphaDench fork — the dench_search_integrations /
+      // dench_execute_integrations tools targeted the Dench Cloud gateway,
+      // which we no longer use. HubSpot + Gong now have their own
+      // first-class plugins (extensions/hubspot, extensions/gong).
+      enabled: false,
+    },
+    {
+      pluginId: "hubspot",
+      sourceDirName: "hubspot",
+      enabled: !!process.env.HUBSPOT_PRIVATE_APP_TOKEN,
+    },
+    {
+      pluginId: "gong",
+      sourceDirName: "gong",
+      enabled: !!(process.env.GONG_ACCESS_KEY && process.env.GONG_ACCESS_SECRET),
     },
     {
       pluginId: "apollo-enrichment",

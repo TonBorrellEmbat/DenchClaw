@@ -1,0 +1,13 @@
+{
+  "id": "gong",
+  "name": "Gong (direct)",
+  "version": "1.0.0",
+  "description": "Read-only Gong tools. Uses GONG_ACCESS_KEY + GONG_ACCESS_SECRET to call your Gong API base URL directly — no Composio or other middleman.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true }
+    }
+  }
+}

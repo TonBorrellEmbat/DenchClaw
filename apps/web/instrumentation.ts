@@ -23,18 +23,18 @@ export async function register() {
       console.error("[instrumentation] ensureLatestSchema failed:", err);
     }
 
-    // Provision non-OAuth Composio connections (HubSpot via PAT, Gong via
-    // API key+secret) from Render env vars. Idempotent — running on every
-    // boot keeps openclaw.json's mcp.servers entries pointing at the right
-    // server even after a /data wipe, with zero UI interaction.
+    // HubSpot + Gong are wired as native OpenClaw plugins now
+    // (extensions/hubspot, extensions/gong). Strip any leftover Composio
+    // MCP entries from openclaw.json so OpenClaw doesn't try to dial the
+    // (now unused) Composio MCP servers at startup.
     try {
-      const { provisionDirectComposioConnections } = await import(
+      const { stripComposioMcpEntries } = await import(
         "./lib/composio-direct-provision"
       );
-      await provisionDirectComposioConnections();
+      stripComposioMcpEntries();
     } catch (err) {
       console.error(
-        "[instrumentation] provisionDirectComposioConnections failed:",
+        "[instrumentation] stripComposioMcpEntries failed:",
         err,
       );
     }
