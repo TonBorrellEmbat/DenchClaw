@@ -89,8 +89,12 @@ SLACK_SEND_MESSAGE({
 - Tool names are **uppercase** with underscores (e.g. `HUBSPOT_LIST_DEALS`).
 - Pass **JSON-shaped** arguments as the tool schema requires: arrays are
   arrays, not comma-separated strings.
-- Read the returned `inputSchema` before filling arguments. Use exact
-  field names and types.
+- **Always inspect the tool's `inputSchema` before constructing arguments.**
+  The MCP tool schema is the source of truth — *not* the upstream
+  provider's REST API docs, which often have extra fields the MCP tool
+  doesn't expose. Passing an unrecognized top-level field triggers a
+  `root: must not have additional properties` validation error from the
+  MCP server and the call fails.
 - If a tool isn't in your tool list, **don't** call shell CLIs, `gog`,
   `curl`, or raw REST endpoints to substitute. Stop and tell the user to
   connect that toolkit in the Integrations tab.
@@ -98,6 +102,25 @@ SLACK_SEND_MESSAGE({
   (contacts, companies, deals, pipelines, account info). Tickets are
   intentionally out of scope. The agent cannot write to HubSpot in this
   deployment.
+
+### HubSpot-specific schema gotchas
+
+- **`HUBSPOT_SEARCH_*` tools do NOT accept an `associations` parameter.**
+  HubSpot's REST API allows it on some endpoints, but the MCP search
+  tools only return scalar properties of the matched objects. To get
+  associated records: run the search first to collect ids, then call a
+  separate tool to fetch associations or run a second search on the
+  related object type with `filterGroups` matching the ids.
+  Valid top-level fields for `HUBSPOT_SEARCH_*`: `after`,
+  `custom_properties`, `filterGroups`, `limit`, `properties`, `query`,
+  `sorts`. Nothing else.
+- For deals associated with a company, prefer the pattern: search
+  companies → get ids → `HUBSPOT_SEARCH_DEALS` with a filter on
+  `associations.company` or `hubspot_owner_id` rather than expecting
+  the company search to return deals inline.
+- `properties` is a JSON **array of strings** naming the HubSpot
+  property internal names to include in the response (e.g.
+  `["name", "domain", "industry"]`). It is not a JSON object.
 
 ## Pagination
 
