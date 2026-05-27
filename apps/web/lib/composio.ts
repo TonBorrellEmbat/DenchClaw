@@ -325,6 +325,7 @@ function resolveCustomAuthCredentials(toolkitSlug: string): {
   clientId: string;
   clientSecret: string;
   scopes: string[];
+  optionalScopes: string[];
 } | null {
   const slug = toolkitSlug.toLowerCase();
   if (slug === "hubspot") {
@@ -334,11 +335,14 @@ function resolveCustomAuthCredentials(toolkitSlug: string): {
     return {
       clientId,
       clientSecret,
-      // Must be a subset of what the HubSpot developer app is registered
-      // for. Mirror the read-only CRM set we configured in the HubSpot
-      // app's `requiredScopes`.
-      scopes: [
-        "oauth",
+      // Required scopes must match what the HubSpot developer app
+      // declares as `requiredScopes` — keep this minimal so non-admin
+      // users can install. CRM scopes are user-selectable via the
+      // scope picker on the HubSpot consent screen and live in
+      // optionalScopes here so Composio sends them as `optional_scopes`
+      // in the install URL (matching HubSpot's app config).
+      scopes: ["oauth"],
+      optionalScopes: [
         "crm.objects.contacts.read",
         "crm.objects.companies.read",
         "crm.objects.deals.read",
@@ -553,6 +557,9 @@ async function ensureAuthConfigForToolkit(
                 client_id: customCreds.clientId,
                 client_secret: customCreds.clientSecret,
                 scopes: customCreds.scopes.join(","),
+                ...(customCreds.optionalScopes.length > 0
+                  ? { optional_scopes: customCreds.optionalScopes.join(",") }
+                  : {}),
               },
             }
           : {
@@ -593,6 +600,9 @@ async function ensureAuthConfigForToolkit(
             client_id: customCreds.clientId,
             client_secret: customCreds.clientSecret,
             scopes: customCreds.scopes.join(","),
+            ...(customCreds.optionalScopes.length > 0
+              ? { optional_scopes: customCreds.optionalScopes.join(",") }
+              : {}),
           },
         },
       }
