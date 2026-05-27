@@ -1,5 +1,6 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    process.stdout.write("[instrumentation] register() start\n");
     const { startTerminalServer } = await import("./lib/terminal-server");
     startTerminalServer(Number(process.env.TERMINAL_WS_PORT) || 3101);
 

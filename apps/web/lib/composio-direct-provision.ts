@@ -326,28 +326,69 @@ async function ensureMcpServer(
   return mcpUrl;
 }
 
+// Direct stdout write — Next.js standalone occasionally swallows console.log
+// from the instrumentation hook so we surface progress via the same channel
+// the AlphaClaw bootstrap uses (visible in Render's app logs).
+function log(line: string): void {
+  process.stdout.write(`[composio-direct] ${line}\n`);
+}
+
 /**
  * Run on Next.js server boot. Best-effort; per-provider failures don't block
- * the rest of the providers and don't block server startup.
+ * the rest of the providers and don't block server startup. Also drops a
+ * status file at /data/.openclaw-dench/composio-direct-status.json so we can
+ * inspect results without shell access.
  */
 export async function provisionDirectComposioConnections(): Promise<void> {
+  log("starting");
+  const status: UnknownRecord = {
+    ranAt: new Date().toISOString(),
+    providers: {} as Record<string, unknown>,
+  };
+  const writeStatus = (): void => {
+    try {
+      const fs = require("node:fs") as typeof import("node:fs");
+      const path = require("node:path") as typeof import("node:path");
+      const { resolveOpenClawStateDir } = require("@/lib/workspace") as {
+        resolveOpenClawStateDir: () => string;
+      };
+      const out = path.join(
+        resolveOpenClawStateDir(),
+        "composio-direct-status.json",
+      );
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, JSON.stringify(status, null, 2), "utf-8");
+    } catch (err) {
+      log(`status write failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const apiKey = process.env.COMPOSIO_API_KEY?.trim();
   if (!apiKey) {
-    console.log("[composio-direct] COMPOSIO_API_KEY not set, skipping");
+    log("COMPOSIO_API_KEY not set, skipping");
+    status.skipped = "no-api-key";
+    writeStatus();
     return;
   }
   const gatewayUrl = resolveComposioGatewayUrl();
 
   for (const provider of PROVIDERS) {
+    const providerStatus: UnknownRecord = {};
+    (status.providers as Record<string, unknown>)[provider.toolkitSlug] =
+      providerStatus;
+
     const credentials = provider.readCredentials();
     if (!credentials) {
-      console.log(
-        `[composio-direct] ${provider.toolkitSlug}: env vars not set, skipping`,
-      );
+      log(`${provider.toolkitSlug}: env vars not set, skipping`);
+      providerStatus.skipped = "no-credentials";
       continue;
     }
     try {
+      log(`${provider.toolkitSlug}: ensuring auth_config`);
       const authConfigId = await ensureAuthConfig(gatewayUrl, apiKey, provider);
+      providerStatus.authConfigId = authConfigId;
+
+      log(`${provider.toolkitSlug}: ensuring connected_account`);
       await ensureConnectedAccount(
         gatewayUrl,
         apiKey,
@@ -355,26 +396,32 @@ export async function provisionDirectComposioConnections(): Promise<void> {
         authConfigId,
         credentials,
       );
+
+      log(`${provider.toolkitSlug}: ensuring mcp server`);
       const mcpUrl = await ensureMcpServer(
         gatewayUrl,
         apiKey,
         provider,
         authConfigId,
       );
+      providerStatus.mcpUrl = mcpUrl;
+
       registerComposioMcpInOpenClaw({
         toolkitSlug: provider.toolkitSlug,
         mcpUrl,
         userId: USER_ID,
         apiKeyEnvVar: "COMPOSIO_API_KEY",
       });
-      console.log(
-        `[composio-direct] ${provider.toolkitSlug}: provisioned ${provider.mcpServerName}`,
+      providerStatus.registered = true;
+      log(
+        `${provider.toolkitSlug}: provisioned ${provider.mcpServerName} -> ${mcpUrl}`,
       );
     } catch (err) {
-      console.error(
-        `[composio-direct] ${provider.toolkitSlug} failed:`,
-        err instanceof Error ? err.message : err,
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      providerStatus.error = msg;
+      log(`${provider.toolkitSlug} failed: ${msg}`);
     }
   }
+  writeStatus();
+  log("done");
 }
