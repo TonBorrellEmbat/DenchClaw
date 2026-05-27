@@ -22,6 +22,22 @@ export async function register() {
       console.error("[instrumentation] ensureLatestSchema failed:", err);
     }
 
+    // Provision non-OAuth Composio connections (HubSpot via PAT, Gong via
+    // API key+secret) from Render env vars. Idempotent — running on every
+    // boot keeps openclaw.json's mcp.servers entries pointing at the right
+    // server even after a /data wipe, with zero UI interaction.
+    try {
+      const { provisionDirectComposioConnections } = await import(
+        "./lib/composio-direct-provision"
+      );
+      await provisionDirectComposioConnections();
+    } catch (err) {
+      console.error(
+        "[instrumentation] provisionDirectComposioConnections failed:",
+        err,
+      );
+    }
+
     // Note: the Gmail/Calendar incremental poll loop is no longer armed
     // from inside the Next.js process. The OpenClaw gateway daemon's
     // `dench-ai-gateway` plugin owns the timing now and POSTs to
