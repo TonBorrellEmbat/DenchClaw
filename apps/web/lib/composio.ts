@@ -335,14 +335,19 @@ function resolveCustomAuthCredentials(toolkitSlug: string): {
     return {
       clientId,
       clientSecret,
-      // Required scopes must match what the HubSpot developer app
-      // declares as `requiredScopes` — keep this minimal so non-admin
-      // users can install. CRM scopes are user-selectable via the
-      // scope picker on the HubSpot consent screen and live in
-      // optionalScopes here so Composio sends them as `optional_scopes`
-      // in the install URL (matching HubSpot's app config).
-      scopes: ["oauth"],
-      optionalScopes: [
+      // Must match the HubSpot developer app's `requiredScopes` set
+      // exactly. We tried splitting required vs optional to get the
+      // per-scope consent UX HubSpot's native MCP provides, but
+      // Composio's install-URL builder doesn't honor
+      // credentials.optional_scopes — it bundles everything into the
+      // `scope=` parameter, which HubSpot rejects as "invalid scopes"
+      // when those scopes are declared optional on the app side.
+      // Keep all scopes required on both sides. The set below is the
+      // narrowest CRM-read footprint that doesn't trigger admin-perm
+      // gates on non-admin HubSpot users (tickets dropped earlier
+      // because that scope demanded "Edit property settings").
+      scopes: [
+        "oauth",
         "crm.objects.contacts.read",
         "crm.objects.companies.read",
         "crm.objects.deals.read",
@@ -351,6 +356,7 @@ function resolveCustomAuthCredentials(toolkitSlug: string): {
         "crm.schemas.companies.read",
         "crm.schemas.deals.read",
       ],
+      optionalScopes: [],
     };
   }
   return null;
